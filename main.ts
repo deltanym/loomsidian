@@ -83,6 +83,8 @@ const DEFAULT_SETTINGS: LoomSettings = {
   systemPrompt:
     "The assistant is in CLI simulation mode, and responds to the user's CLI commands only with the output of the command.",
   userMessage: "<cmd>cat untitled.txt</cmd>",
+  cacheBreak: 0,
+  cacheBreakOffset: 0,
   showSettings: false,
   showSearchBar: false,
   showNodeBorders: false,
@@ -189,7 +191,7 @@ export default class LoomPlugin extends Plugin {
         // fetch:
         defaultHeaders: {
           "anthropic-version": "2023-06-01",
-          "anthropic-beta": "messages-2023-12-15",
+          "anthropic-beta": "messages-2023-12-15,prompt-caching-2024-07-31",
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Headers": "*",
           "Access-Control-Allow-Methods": "*",
@@ -312,6 +314,51 @@ export default class LoomPlugin extends Plugin {
     children.forEach((child) => (child.parentId = childId));
 
     return [parentNode, childId];
+  }
+
+  moveToCacheBreak(file: TFile) {
+    // first, get the cacheBreak value
+    const breakpt = this.settings.cacheBreak;
+    let count = 0;
+    // iterate over lines until the next line would put you past the cacheBreak value
+    for (let line = 0; line < this.editor.lineCount(); line++){
+      if(count + this.editor.getLine(line).length + 1 > breakpt){
+        const ch = breakpt-count;
+        this.editor.setCursor({ line, ch });
+        break;
+      }
+      count += this.editor.getLine(line).length + 1;
+    }
+  }
+
+  setCacheBreak(file: TFile) {
+    const state = this.state[file.path];
+    const current = state.current;
+
+    // get the cursor's position in the full text
+    const cursor = this.editor.getCursor();
+    let cursorPos = 0;
+    for (let i = 0; i < cursor.line; i++)
+      cursorPos += this.editor.getLine(i).length + 1;
+    cursorPos += cursor.ch;
+    //deal with the text formatting being done. this is slightly weird around certain \ points and not sure if it works exactly correctly
+    const slice = this.fullText(file, current).slice(0, cursorPos);
+    let prompt = `${this.settings.prepend}${slice}`;
+    const trailingSpace = prompt.match(/\s+$/);
+    prompt = prompt.replace(/\s+$/, "");
+    prompt = prompt.replace(/\\</g, "<").replace(/\\\[/g, "[");
+    const offset = prompt.length - cursorPos;
+
+    this.app.workspace.trigger(
+        "loom:set-setting",
+        "cacheBreak",
+        cursorPos
+    );
+    this.app.workspace.trigger(
+        "loom:set-setting",
+        "cacheBreakOffset",
+        offset
+    );
   }
 
   async onload() {
@@ -444,6 +491,26 @@ export default class LoomPlugin extends Plugin {
         }),
       hotkeys: [{ modifiers: ["Alt"], key: "s" }],
     });
+
+	this.addCommand({
+		id: "set-cache-break",
+		name: "Set cache breakpoint at current point",
+		checkCallback: (checking: boolean) =>
+		withState(checking, (state) => {
+			this.app.workspace.trigger("loom:set-cache-break", state.current);
+		}),
+		hotkeys: [{ modifiers: ["Alt", "Shift"], key: "g" }],
+	});
+
+	this.addCommand({
+		id: "move-to-cache-break",
+		name: "Move cursor to cache breakpoint",
+		checkCallback: (checking: boolean) =>
+		withState(checking, (state) => {
+			this.app.workspace.trigger("loom:move-to-cache-break", state.current);
+		}),
+		hotkeys: [{ modifiers: ["Alt"], key: "g" }],
+	});
 
     this.addCommand({
       id: "break-at-point-create-child",
@@ -901,6 +968,24 @@ export default class LoomPlugin extends Plugin {
         })
       )
     );
+
+	this.registerEvent(
+		// @ts-expect-error
+		this.app.workspace.on("loom:set-cache-break", () =>
+		this.withFile((file) => {
+			this.setCacheBreak(file);
+		})
+		)
+	);
+
+	this.registerEvent(
+		// @ts-expect-error
+		this.app.workspace.on("loom:move-to-cache-break", () =>
+		this.withFile((file) => {
+			this.moveToCacheBreak(file);
+		})
+		)
+	);
 
     this.registerEvent(
       // @ts-expect-error
@@ -1736,12 +1821,19 @@ export default class LoomPlugin extends Plugin {
   }
 
   async completeAnthropic(prompt: string) {
-    const completions = await Promise.all(
-      [...Array(this.settings.n).keys()].map(async () => {
-        return await this.getAnthropicResponse(prompt);
-      })
-    );
-
+	//this is bad, i know, i will fix it
+	//very in the bare minimum writing-for-myself stage here
+	const completion1 = await Promise.all(
+		[0].map(async () => {
+			return await this.getAnthropicResponse(prompt);
+		})
+	);
+	const ncompletions = await Promise.all(
+		[...Array(this.settings.n-1).keys()].map(async () => {
+			return await this.getAnthropicResponse(prompt);
+		})
+	);
+	const completions = completion1.concat(ncompletions);
     const result: CompletionResult = { ok: true, completions };
     return result;
   }
@@ -1749,16 +1841,34 @@ export default class LoomPlugin extends Plugin {
   async getAnthropicResponse(prompt: string) {
     prompt = this.trimOpenAIPrompt(prompt);
     // let result: CompletionResult;
+    //TODO add checks to make sure it's enough tokens? it still logs as cache writes if it's under 1024, so... might overcharge?
+    //and other things, this isn't ideal, it just works enough
+    let messages = [
+        { role: "user", content: `${this.settings.userMessage}` },
+        { role: "assistant", content: [{type: "text", text: `${prompt}`, cache_control: {type: "ephemeral"}}] },
+    ];
+    if(this.settings.cacheBreak !== 0){
+        const breakFirst = this.settings.cacheBreak + this.settings.cacheBreakOffset;
+
+        const first = prompt.slice(0, breakFirst);
+        const second = prompt.slice(breakFirst, prompt.length);
+
+        messages = [
+            { role: "user", content: `${this.settings.userMessage}` },
+            { role: "assistant", content: [
+                {type: "text", text: `${first}`, cache_control: {type: "ephemeral"}},
+                {type: "text", text: `${second}`, cache_control: {type: "ephemeral"}}
+            ]},
+        ];
+    }
+
     const body = JSON.stringify(
       {
         model: getPreset(this.settings).model,
         max_tokens: this.settings.maxTokens,
         temperature: this.settings.temperature,
         system: this.settings.systemPrompt,
-        messages: [
-          { role: "user", content: `${this.settings.userMessage}` },
-          { role: "assistant", content: `${prompt}` },
-        ],
+        messages: messages,
       },
       null,
       2
@@ -1773,6 +1883,7 @@ export default class LoomPlugin extends Plugin {
         headers: {
           "content-type": "application/json",
           "anthropic-version": "2023-06-01",
+          "anthropic-beta": "prompt-caching-2024-07-31",
           "x-api-key": this.anthropicApiKey,
         },
         body,

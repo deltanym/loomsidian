@@ -369,6 +369,7 @@ export class LoomView extends ItemView {
       createCheckbox("prepend", "Prepend sequence");
       createCheckbox("systemPrompt", "System prompt");
       createCheckbox("userMessage", "User message");
+      createCheckbox("cacheBreak", "First cache block");
     }
 
     // preset dropdown
@@ -477,6 +478,7 @@ export class LoomView extends ItemView {
     setting("Prepend sequence", "prepend", settings.prepend, "string");
     setting("System prompt", "systemPrompt", settings.systemPrompt, "string");
     setting("User message", "userMessage", settings.userMessage, "string");
+    setting("First block breakpoint for Anthropic cache","cacheBreak", String(settings.cacheBreak),"int");
   }
 
   renderBookmarks(container: HTMLElement, state: NoteState) {

@@ -53,6 +53,8 @@ export interface LoomSettings {
   n: number;
   systemPrompt: string;
   userMessage: string;
+  cacheBreak: number;
+  cacheBreakOffset: number;
 
   showSettings: boolean;
   showSearchBar: boolean;
