@@ -8,6 +8,7 @@ export const PROVIDERS = [
   "azure-chat",
   "anthropic",
   "openrouter",
+  "deepseek",
 ];
 export type Provider = (typeof PROVIDERS)[number];
 

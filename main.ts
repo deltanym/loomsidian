@@ -106,6 +106,8 @@ export default class LoomPlugin extends Plugin {
   azure: AzureOpenAIApi;
   anthropic: Anthropic;
   anthropicApiKey: string;
+  deepseekApiKey: string;
+
 
   rendering = false;
 
@@ -198,7 +200,9 @@ export default class LoomPlugin extends Plugin {
           "Access-Control-Allow-Credentials": "true",
         },
       });
-    }
+	} else if (preset.provider == "deepseek") {
+		this.deepseekApiKey = preset.apiKey;
+	}
   }
 
   apiKeySet() {
@@ -1409,6 +1413,7 @@ export default class LoomPlugin extends Plugin {
       azure: this.completeAzure,
       "azure-chat": this.completeAzureChat,
       anthropic: this.completeAnthropic,
+	  "deepseek": this.completeDeepseek,
       openrouter: this.completeOpenRouter,
     };
     let result;
@@ -1910,6 +1915,78 @@ export default class LoomPlugin extends Plugin {
     }
   }
 
+
+  async completeDeepseek(prompt: string) {
+	  //this is bad, i know, i will fix it
+	  //very in the bare minimum writing-for-myself stage here
+	  const completion1 = await Promise.all(
+		  [0].map(async () => {
+			  return await this.getDeepseekResponse(prompt);
+		  })
+	  );
+	  const ncompletions = await Promise.all(
+		  [...Array(this.settings.n-1).keys()].map(async () => {
+			  return await this.getDeepseekResponse(prompt);
+		  })
+	  );
+	  const completions = completion1.concat(ncompletions);
+	  const result: CompletionResult = { ok: true, completions };
+	  return result;
+  }
+
+  async getDeepseekResponse(prompt: string) {
+    prompt = this.trimOpenAIPrompt(prompt);
+    // let result: CompletionResult;
+    const body = JSON.stringify(
+      {
+        model: getPreset(this.settings).model,
+        max_tokens: this.settings.maxTokens,
+        temperature: this.settings.temperature,
+        system: this.settings.systemPrompt,
+        messages: [
+          { role: "user", content: `${this.settings.userMessage}` },
+          { role: "assistant", content: `${prompt}`, "prefix": true},
+        ],
+      },
+      null,
+      2
+    );
+    if (this.settings.logApiCalls) {
+      console.log(`request body: ${body}`);
+    }
+    try {
+      const response = await requestUrl({
+        url: "https://api.deepseek.com/beta/chat/completions",
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${this.deepseekApiKey}`,
+        },
+        body,
+      });
+
+      if (response.status !== 200) {
+        console.error("response", response);
+        return null;
+      }
+
+      const result = response.json.choices[0]?.message?.content || "<no text>";
+
+      // ? { ok: true, completions: [response.json.content[0]?.text || "<no text>"] }
+      // : { ok: false, status: response.status, message: "" };
+
+      if (this.settings.logApiCalls) {
+        console.log(result);
+		console.log(response.json.usage);
+      }
+
+      return result;
+    } catch (e) {
+      console.error(e);
+      return null;
+    }
+}
+
   async loadSettings() {
     const settings = (await this.loadData())?.settings || {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, settings);
@@ -2037,6 +2114,10 @@ class LoomSettingTab extends PluginSettingTab {
       text: "Claude 3.5 Sonnet",
       attr: { value: "claude-3.5-sonnet" },
     });
+	fillInModelDropdown.createEl("option", {
+		text: "Deepseek v2.5",
+		attr: { value: "deepseek-2.5" },
+	});
     fillInModelDropdown.createEl("option", {
       text: "GPT-4 base",
       attr: { value: "gpt-4-base" },
@@ -2105,6 +2186,18 @@ class LoomSettingTab extends PluginSettingTab {
           ].contextLength = 50000;
           break;
         }
+		case "deepseek-2.5": {
+			this.plugin.settings.modelPresets[
+				this.plugin.settings.modelPreset
+			].provider = "deepseek";
+			this.plugin.settings.modelPresets[
+				this.plugin.settings.modelPreset
+			].model = "deepseek-chat";
+			this.plugin.settings.modelPresets[
+				this.plugin.settings.modelPreset
+			].contextLength = 50000;
+			break;
+		}
         case "gpt-4-base": {
           this.plugin.settings.modelPresets[
             this.plugin.settings.modelPreset
@@ -2281,6 +2374,7 @@ class LoomSettingTab extends PluginSettingTab {
           "openai-compat": "OpenAI-compatible API",
           "openrouter": "OpenRouter",
           anthropic: "Anthropic",
+		  "deepseek": "Deepseek",
           openai: "OpenAI",
           "openai-chat": "OpenAI (Chat)",
           azure: "Azure",
