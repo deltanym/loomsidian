@@ -1588,7 +1588,6 @@ export default class LoomPlugin extends Plugin {
 
   async completeOpenRouter(prompt: string) {
     prompt = this.trimOpenAIPrompt(prompt);
-
     let body: any = {
       prompt,
       model: getPreset(this.settings).model,
@@ -1597,11 +1596,14 @@ export default class LoomPlugin extends Plugin {
       temperature: this.settings.temperature,
       top_p: this.settings.topP,
       best_of: this.settings.bestOf,
-      provider: {
-        // @ts-expect-error
-        quantizations: [getPreset(this.settings).quantization]
-      }
     };
+	// @ts-expect-error
+    if (getPreset(this.settings).quantization !== "na"){
+        body.provider = {
+            // @ts-expect-error
+            quantizations: [getPreset(this.settings).quantization]
+        };
+    }
     if (this.settings.frequencyPenalty !== 0)
       body.frequency_penalty = this.settings.frequencyPenalty;
     if (this.settings.presencePenalty !== 0)
@@ -2393,7 +2395,8 @@ class LoomSettingTab extends PluginSettingTab {
               fp16: "fp16",
               fp8: "fp8",
               int8: "int8",
-              int4: "int4"
+              int4: "int4",
+			  na: "N/a"
             })
             .setValue(
               this.plugin.settings.modelPresets[
